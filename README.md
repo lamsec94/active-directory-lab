@@ -1,6 +1,11 @@
 # Active Directory Lab
 
-Windows Server 2022 Active Directory homelab demonstrating enterprise OU design, GPO management, PowerShell provisioning, and dual-identity integration with FreeIPA.
+Windows Server Active Directory lab documenting enterprise-style identity design,
+Group Policy scoping, PowerShell-based provisioning, multi-DC operations, and
+internal certificate services. This repository focuses on how Active Directory
+was structured and operated as part of a broader Windows and Linux homelab.
+
+> **Built by:** Lamar Scott | **GitHub:** [lamsec94](https://github.com/lamsec94) | **Last updated:** May 2026
 
 ---
 
@@ -8,11 +13,34 @@ Windows Server 2022 Active Directory homelab demonstrating enterprise OU design,
 
 | Component | Details |
 |---|---|
-| Domain Controller | Windows Server 2022 |
+| Primary Domain Controller | Windows Server 2022 |
+| Secondary Domain Controller | Windows Server 2025 |
 | Domain | `homelab.local` |
 | Workstation | Windows 11 Pro (domain-joined) |
-| Linux Identity | FreeIPA (AlmaLinux) — parallel identity provider |
+| Certificate Services | ADCS Enterprise Root CA |
+| Linux Identity | FreeIPA (parallel identity provider) |
 | Virtualization | Proxmox VE, two-node cluster |
+
+This environment was designed to go beyond a basic single-DC lab. In addition to
+centralized authentication and GPO management, it includes domain replication,
+internal PKI, and LDAP-backed service authentication for selected applications.
+
+---
+
+## Domain Architecture
+
+The Active Directory environment is built around a primary and secondary domain controller
+to support replication validation, operational resilience, and more realistic Windows
+infrastructure workflows.
+
+| Component | Role |
+|---|---|
+| LAB-DC | Primary domain controller, DNS, ADCS Enterprise Root CA |
+| LAB-DC2 | Secondary domain controller for replication and directory redundancy |
+| Windows 11 Pro | Domain-joined workstation for user policy and software deployment testing |
+
+This design better reflects real-world operations than a single-controller lab and creates
+a platform for testing identity, policy, DNS, certificate trust, and service integration together.
 
 ---
 
@@ -20,7 +48,7 @@ Windows Server 2022 Active Directory homelab demonstrating enterprise OU design,
 
 Designed to reflect a realistic enterprise identity hierarchy with separation between user types and computer roles.
 
-```
+```text
 homelab.local
 ├── Domain Controllers
 ├── Corp-Computers
@@ -30,31 +58,16 @@ homelab.local
 │   ├── IT
 │   └── Standard-Users
 ├── Engineering
-├── IT Staff
+└── IT Staff
 ```
 
 ### Design Rationale
 
-- **Corp-Computers** separates servers from workstations — allows GPOs to target machine types independently
-- **Corp-Users** separates IT staff from standard users — different sudo/access policies per group
-- **Engineering** isolated for future role-specific policy application
-- **IT Staff** at top level — help desk and admin accounts with distinct policy scope
-- Domain Controllers in default OU — managed separately from general computer policy
-
----
-
-## User Accounts
-
-| User | OU | Role |
-|---|---|---|
-| IT Admin | Corp-Users → IT | IT administrator account |
-| Help Desk Tech | IT Staff | Help desk access |
-| Engineer User | Engineering | Engineering role account |
-| John Smith | Corp-Users → Standard-Users | Standard user |
-| Sarah Johnson | Corp-Users → Standard-Users | Standard user |
-| Mike Davis | Corp-Users → Standard-Users | Standard user |
-| Lisa Martinez | Corp-Users → Standard-Users | Standard user |
-| Guest User | Corp-Users → Standard-Users | Restricted guest account |
+- **Corp-Computers** separates servers from workstations so computer policies can be scoped cleanly.
+- **Corp-Users** separates IT staff from standard users to support different access and policy requirements.
+- **Engineering** is isolated for role-specific policy targeting.
+- **IT Staff** remains distinct for administrative and support workflows.
+- **Domain Controllers** stay in the default OU so they are not affected by workstation-oriented computer policy.
 
 ---
 
@@ -64,132 +77,127 @@ homelab.local
 
 | GPO | Linked To | Purpose |
 |---|---|---|
-| Default Domain Policy | Domain root | Password policy, account lockout |
-| Security - Screen Lock 5 Minutes | Corp-Computers | Idle screen lock enforcement |
-| Deploy 7-Zip | Corp-Computers | Software deployment via GPO |
-| WSUS Client Settings | Corp-Computers | Windows Update server targeting |
+| Default Domain Policy | Domain root | Password policy and account lockout baseline |
+| Security - Screen Lock 5 Minutes | Corp-Computers | Idle session lock enforcement |
+| Deploy 7-Zip | Corp-Computers | Software deployment through Group Policy |
+| WSUS Client Settings | Corp-Computers | Windows Update targeting and patch policy |
 | Security - Block USB Storage | Corp-Computers | Removable media restriction |
 
 ### GPO Design Notes
 
-- All computer policies scoped to `Corp-Computers` — DCs are excluded from workstation/server GPOs
-- `Default Domain Policy` is the only domain-root linked GPO — keeps root clean
-- USB storage blocked at the computer level — applies regardless of logged-in user
-- Screen lock enforced via computer policy — not user policy, so it applies to all sessions
+- All computer policies are scoped to `Corp-Computers`, which keeps them off domain controllers.
+- `Default Domain Policy` remains the only domain-root linked GPO.
+- USB storage blocking is enforced as a computer policy so it applies consistently.
+- Screen lock is applied at the computer level rather than depending on user context.
+
+This keeps policy scope intentional and avoids the common mistake of linking workstation controls too broadly.
 
 ---
 
 ## PowerShell Provisioning
 
+PowerShell was used to make the directory layout reproducible and easier to validate after changes.
+
 ### OU Structure
 
 ```powershell
-# Create top-level OUs
 New-ADOrganizationalUnit -Name "Corp-Computers" -Path "DC=homelab,DC=local"
 New-ADOrganizationalUnit -Name "Corp-Users" -Path "DC=homelab,DC=local"
 New-ADOrganizationalUnit -Name "Engineering" -Path "DC=homelab,DC=local"
 New-ADOrganizationalUnit -Name "IT Staff" -Path "DC=homelab,DC=local"
 
-# Create sub-OUs
 New-ADOrganizationalUnit -Name "Servers" -Path "OU=Corp-Computers,DC=homelab,DC=local"
 New-ADOrganizationalUnit -Name "Workstations" -Path "OU=Corp-Computers,DC=homelab,DC=local"
 New-ADOrganizationalUnit -Name "IT" -Path "OU=Corp-Users,DC=homelab,DC=local"
 New-ADOrganizationalUnit -Name "Standard-Users" -Path "OU=Corp-Users,DC=homelab,DC=local"
 ```
 
-### User Placement
-
-```powershell
-# Move users to correct OUs
-Move-ADObject -Identity "CN=IT Admin,DC=homelab,DC=local" `
-  -TargetPath "OU=IT,OU=Corp-Users,DC=homelab,DC=local"
-
-Move-ADObject -Identity "CN=Engineer User,DC=homelab,DC=local" `
-  -TargetPath "OU=Engineering,DC=homelab,DC=local"
-
-Move-ADObject -Identity "CN=Guest User,CN=Users,DC=homelab,DC=local" `
-  -TargetPath "OU=Standard-Users,OU=Corp-Users,DC=homelab,DC=local"
-```
-
-### Computer Placement
-
-```powershell
-# Move workstation to correct OU
-Move-ADObject -Identity "CN=WINDOWS11-VM,CN=Computers,DC=homelab,DC=local" `
-  -TargetPath "OU=Workstations,OU=Corp-Computers,DC=homelab,DC=local"
-```
-
 ### GPO Links
 
 ```powershell
-# Scope computer GPOs to Corp-Computers only
 New-GPLink -Name "Deploy 7-Zip" -Target "OU=Corp-Computers,DC=homelab,DC=local"
 New-GPLink -Name "WSUS Client Settings" -Target "OU=Corp-Computers,DC=homelab,DC=local"
 New-GPLink -Name "Security - Block USB Storage" -Target "OU=Corp-Computers,DC=homelab,DC=local"
 
-# Remove broad domain-root links
 Remove-GPLink -Name "Deploy 7-Zip" -Target "DC=homelab,DC=local"
 Remove-GPLink -Name "WSUS Client Settings" -Target "DC=homelab,DC=local"
 ```
 
-### Verify Final State
+### Validation
 
 ```powershell
-# Confirm OU structure
 Get-ADOrganizationalUnit -Filter * | Select-Object Name, DistinguishedName | Format-Table -AutoSize
-
-# Confirm user placement
 Get-ADUser -Filter * | Select-Object Name, DistinguishedName | Format-Table -AutoSize
-
-# Confirm computer placement
 Get-ADComputer -Filter * | Select-Object Name, DistinguishedName | Format-Table -AutoSize
-
-# Confirm GPO links
 Get-GPInheritance -Target "DC=homelab,DC=local" | Select-Object -ExpandProperty GpoLinks
 Get-GPInheritance -Target "OU=Corp-Computers,DC=homelab,DC=local" | Select-Object -ExpandProperty GpoLinks
 ```
 
 ---
 
-## Dual Identity — AD + FreeIPA
+## Certificate Services
 
-The lab runs two parallel identity providers targeting different host types.
+Active Directory Certificate Services was deployed on the primary domain controller as an
+Enterprise Root CA named `homelab-CA`. This CA issues trust used across internal services
+and supports the broader move to HTTPS across the homelab.
 
-### Architecture
-
-```
-Windows hosts  →  Active Directory (homelab.local)
-Linux hosts    →  FreeIPA (ipa.homelab.local)
-```
-
-### Why Dual Identity
-
-Enterprise environments rarely run a single identity provider across all platforms. This lab reflects that reality:
-
-- Windows workstations and the DC are managed entirely through AD — GPOs, software deployment, and authentication
-- Linux VMs are enrolled in FreeIPA — HBAC rules control SSH access, sudo rules are centrally managed
-- Both systems are independent — no AD-IPA trust configured, intentionally kept separate to demonstrate both stacks
-
-### FreeIPA Configuration
-
-| Component | Configuration |
+| PKI Component | Purpose |
 |---|---|
-| HBAC | `allow_admins` rule — admin account only, sshd service |
-| HBAC | `allow_all` default rule disabled |
-| Sudo | `allow_admin_sudo` — full sudo with password required |
-| Enrolled hosts | IPA server, Ansible controller |
+| Enterprise Root CA | Internal trust anchor for Windows and internal services |
+| Wildcard certificate | Shared certificate for internal reverse-proxied services |
+| CA trust distribution | Certificate trust validation across administrative endpoints and browsers |
 
-### DNS
-
-- AD DNS handles `homelab.local` resolution — conditional forward configured on AdGuard Home
-- FreeIPA DNS handles `ipa.homelab.local`
-- All VLANs resolve through AdGuard Home as primary DNS
+This adds meaningful enterprise depth to the AD deployment because certificate trust,
+service identity, and internal HTTPS are now tied back to Windows infrastructure rather than
+being handled as isolated one-off tasks.
 
 ---
 
-## Key Takeaways
+## LDAP Service Integration
 
-- GPO scope matters — linking computer policies at domain root applies them to DCs, which is incorrect and a common mistake
-- OU design should reflect policy boundaries, not just org chart structure
-- Dual identity stacks are common in hybrid environments — AD for Windows, LDAP/IPA for Linux is a standard enterprise pattern
-- PowerShell provisioning makes AD configuration reproducible and auditable
+Active Directory is also used as an identity backend for internal applications.
+A dedicated read-only LDAP bind account was created for GLPI so the ITSM platform could
+authenticate domain users without requiring elevated directory permissions.
+
+| Integration | Purpose |
+|---|---|
+| GLPI LDAP bind account | Read-only directory queries for service authentication |
+| Imported domain users | Domain-backed authentication and access inside GLPI |
+
+This demonstrates that the directory is being used as a real shared identity service,
+not just a login source for a single Windows client.
+
+---
+
+## Dual Identity
+
+The lab runs two parallel identity systems:
+
+```text
+Windows hosts  →  Active Directory (homelab.local)
+Linux hosts    →  FreeIPA
+```
+
+This reflects a more realistic mixed-platform environment where Windows and Linux systems
+do not always rely on a single identity provider. Active Directory handles Windows-centric
+policy and authentication, while FreeIPA manages Linux host enrollment, HBAC, and sudo policy.
+
+---
+
+## Operational Lessons
+
+- GPO scope matters; broad links at the domain root create avoidable policy risk.
+- OU design should follow management and policy boundaries, not just naming preference.
+- A second domain controller adds real operational value by forcing replication validation and healthier directory design.
+- PKI depends on accurate time; certificate issuance and trust can fail immediately when the CA clock is incorrect.
+- Least-privilege LDAP service accounts are a better pattern than reusing administrative credentials for application binds.
+
+These are the kinds of details that make the lab more representative of real Windows infrastructure work.
+
+---
+
+## Skills Demonstrated
+
+`Active Directory` `Windows Server 2022` `Windows Server 2025` `OU Design`
+`Group Policy` `PowerShell` `ADCS` `PKI` `DNS` `LDAP`
+`Identity architecture` `Windows administration` `Infrastructure documentation`
