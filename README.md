@@ -8,11 +8,11 @@ The directory backs a GLPI service desk and a set of reproducible Tier 1 support
 
 | Host | OS | Role |
 |---|---|---|
-| LAB-DC | Windows Server 2022 | Primary DC, DNS, Enterprise CA, WSUS, software share |
-| LAB-DC2 | Windows Server 2025 | Second DC, PDC Emulator, RID Master, Infrastructure Master |
+| LAB-DC | Windows Server 2025 Standard | Domain controller, DNS, Global Catalog, software share |
+| LAB-DC2 | Windows Server 2025 Standard | Domain controller, DNS, Global Catalog, all five FSMO roles, Enterprise Root CA |
 | WORKSTATION | Windows 11 Pro (25H2) | Domain-joined client for policy validation and ticket reproduction |
 
-Domain: `homelab.local`. Both DCs replicate cleanly and hold full replicas. FSMO roles sit on LAB-DC2, which means the primary can be rebuilt without threatening the directory.
+Domain: `homelab.local`. Both DCs replicate cleanly across all five naming contexts and hold full replicas. Both are Global Catalogs.
 
 Virtualized on a two-node Proxmox cluster with VLAN segmentation and an OPNsense firewall boundary. The Windows host count is capped at three by deliberate decision — see [Constraints](#constraints).
 
@@ -23,6 +23,7 @@ Virtualized on a two-node Proxmox cluster with VLAN segmentation and an OPNsense
 | [docs/ou-structure.md](docs/ou-structure.md) | Tiered OU model, migration from a flat structure, computer object placement |
 | [docs/identity.md](docs/identity.md) | Admin account model, Tier 1 delegation, AGDLP groups, password and lockout policy |
 | [docs/group-policy.md](docs/group-policy.md) | Five GPOs, loopback processing, software deployment troubleshooting |
+| [docs/certificate-authority.md](docs/certificate-authority.md) | Enterprise CA migration between domain controllers, identity verification, rebuild sequencing |
 
 ## Design principles
 
@@ -33,6 +34,23 @@ Virtualized on a two-node Proxmox cluster with VLAN segmentation and an OPNsense
 **Policy scoped to a computer branch.** All machine policies link at a single computer OU rather than the domain root. Domain controllers stay in their default container so they continue to receive `Default Domain Controllers Policy`.
 
 **Scenarios that require the right fix.** Group membership and policy are arranged so support scenarios have a correct resolution rather than a workaround. A VPN group that deliberately excludes three departments produces a "VPN won't connect" ticket whose real answer is a membership change, not a client-side fix.
+
+**Nothing permanent on a host with an expiry date.** Both domain controllers run permanently licensed Windows Server 2025. An earlier build placed the Enterprise Root CA on a domain controller running evaluation media, which coupled a permanent, non-replicating role to a host with a hard shutdown date. Resolving that is documented in [docs/certificate-authority.md](docs/certificate-authority.md).
+
+## Domain controller rebuild
+
+LAB-DC was rebuilt in place on licensed media. The directory came through intact because Active Directory replicates — the second DC held a full replica throughout, and the rebuilt host pulled a fresh copy on promotion.
+
+The Certificate Authority did not have that property, which is what made the operation a sequenced migration rather than a reinstall:
+
+1. Verify replication health and FSMO placement before planning anything
+2. Back up the CA private key, certificate database, and registry configuration
+3. Migrate the CA to the surviving DC and verify by thumbprint and serial
+4. Transfer all FSMO roles off the host being rebuilt
+5. Demote cleanly, then rebuild
+6. Rejoin, promote, verify replication in both directions
+
+Every step was gated on verifying the previous one. Full detail in [docs/certificate-authority.md](docs/certificate-authority.md).
 
 ## Constraints
 
