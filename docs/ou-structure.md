@@ -65,14 +65,16 @@ The migration was destructive and order-dependent. What made it work:
 
 ### Domain controllers were not migrated
 
-LAB-DC and LAB-DC2 remain in the default `OU=Domain Controllers,DC=homelab,DC=local`. Moving a DC's computer object out of that container breaks `Default Domain Controllers Policy` application.
+Both domain controllers remain in the default `OU=Domain Controllers,DC=homelab,DC=local`. Moving a DC's computer object out of that container breaks `Default Domain Controllers Policy` application.
 
-This was discovered the hard way. Before the rebuild, LAB-DC's computer object had drifted into `OU=Servers,OU=Corp-Computers` — outside the default container — and had silently stopped receiving DC-tier policy. There is no error for this; the policy simply does not apply.
+This was discovered the hard way. Before the OU migration, one DC's computer object had drifted into `OU=Servers,OU=Corp-Computers` — outside the default container — and had silently stopped receiving DC-tier policy. There is no error for this; the policy simply does not apply.
+
+That placement held through a later domain controller rebuild. After demotion, reinstall, rejoin, and re-promotion, the computer object landed back in the default container automatically — promotion handles it, and no manual move was required. Placement is worth verifying after any domain controller operation, not only after restructuring.
 
 Verify placement:
 
 ```powershell
-(Get-ADDomainController -Identity LAB-DC).ComputerObjectDN
+(Get-ADDomainController -Identity <dc-name>).ComputerObjectDN
 ```
 
 Then confirm policy application:
@@ -106,6 +108,8 @@ redircmp "OU=Academy,OU=Compounds,OU=Konoha,DC=homelab,DC=local"
 
 `Academy` exists as a staging OU for exactly this purpose — new machines land there, get baseline policy, and move to `Training-Grounds` or `Towers` once configured.
 
+> Domain controllers are the exception to this. A server being promoted to DC has its computer object relocated to the default `Domain Controllers` container by the promotion itself, regardless of where it sat as a member server. That is correct behaviour and should not be reversed.
+
 ## Downstream systems hold literal DNs
 
 An OU restructure breaks every external system that stores a distinguished name, and those breakages surface long after the migration looks complete.
@@ -118,5 +122,7 @@ Two takeaways:
 
 - Prefer UPN form (`account@domain`) over full DN for LDAP bind accounts. Active Directory accepts it, and it survives arbitrary OU moves.
 - After any OU restructuring, explicitly re-test every integrated application rather than reasoning about which ones should be affected.
+
+The same class of problem applies to any stored reference that is not a DN. An integration pointed at a domain controller by IP address rather than by name carries a hidden dependency on that specific host surviving — which a rebuild does not guarantee.
 
 Full writeup in the [GLPI repo](https://github.com/lamsec94/Glpi-itsm-deployment/blob/main/docs/ldap-auth.md).
